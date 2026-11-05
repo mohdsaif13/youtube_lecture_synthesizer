@@ -359,7 +359,7 @@ def extract_slides(
                 continue
 
         if not download_success:
-            combined_errors = "\\n".join(download_errors) if download_errors else last_exception
+            combined_errors = " | ".join(download_errors) if download_errors else last_exception
             raise RuntimeError(classify_youtube_download_error(combined_errors))
 
         local_video_path = video_filename
