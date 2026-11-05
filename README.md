@@ -272,19 +272,24 @@ Instead of sampling every single frame (which creates thousands of duplicates), 
 
 ## 🛠️ Troubleshooting & FAQ
 
-#### 1. "ERROR: unable to download video data: HTTP Error 403: Forbidden"
-- **Why this happens:** When deployed to cloud providers (Streamlit Community Cloud, AWS, GCP, Hetzner), YouTube's anti-bot system detects datacenter IP addresses and blocks web video streams with `HTTP 403 Forbidden`.
-- **How to resolve:**
-  1. **Option A (Zero Setup, Recommended):** In the web UI, click the **"📁 Upload Lecture Video File"** tab and upload your `.mp4` video directly. This processes the slides locally on the server without needing to stream from YouTube!
-  2. **Option B (Automatic Client Fallback):** The latest code automatically rotates client signatures (`android`, `ios`, `mweb`, `tv_embedded`) and forces IPv4, which bypasses 403 errors on many cloud hosts.
-  3. **Option C (Cookies in Streamlit Secrets):** Export cookies from your browser (using extensions like *Get cookies.txt LOCALLY*) and add them to your Streamlit Cloud **Secrets**:
+#### 1. "Sign in to confirm you're not a bot" / HTTP 403
+
+- **Why this happens:** YouTube may require account verification or reject requests from a cloud-hosting IP address. This is an upstream YouTube access restriction, not necessarily an invalid video URL. Repeating requests with different player-client names cannot reliably remove the challenge.
+- **For a video your account is authorized to view:**
+  1. Sign in to YouTube in your own browser and export the session cookies in **Netscape cookies.txt** format. The export must begin with a Netscape/HTTP Cookie File header.
+  2. In Streamlit Community Cloud, open **App settings → Secrets** and add the complete file contents as a TOML multiline value:
      ```toml
      YOUTUBE_COOKIES = """
      # Netscape HTTP Cookie File
-     ...
+     # Replace this example with the complete exported cookies.txt contents.
      """
      ```
-  4. **Option D (Run Locally):** Run the application on your computer using `deploy_local.bat` or `streamlit run app.py` where your residential IP address is not blocked by YouTube.
+  3. Save the secrets and restart/redeploy the app. The app passes these cookies to yt-dlp without displaying them.
+- **Local development:** You may put the exported file at the project root as `cookies.txt`; that filename is excluded by `.gitignore` and `.dockerignore`.
+- **Security:** Cookies are session credentials. Never commit them, share them in an issue/chat, or place them in source code. Use an account authorized to view the video and revoke/refresh the session if the file is exposed or expires.
+- **If the cloud still gets blocked:** Download a copy on your own device while signed in (only where you have permission to do so), then use the **📁 Upload Lecture Video File** tab. Cloud IP restrictions can remain even when cookies are supplied.
+
+For advanced self-hosted setups, yt-dlp documents Proof-of-Origin (PO) token providers. These can help with some YouTube checks, but are not a guarantee: [yt-dlp PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide).
 
 #### 2. "Tesseract OCR executable not found"
 - If running natively, ensure Tesseract is installed (`winget install UB-Mannheim.TesseractOCR` or `brew install tesseract`).
@@ -294,8 +299,7 @@ Instead of sampling every single frame (which creates thousands of duplicates), 
 - The app automatically switches to downloading the audio and transcribing locally with Whisper if `faster-whisper` is installed.
 
 #### 4. "HTTP Error 429: Too Many Requests" from YouTube
-- YouTube occasionally rate-limits automated IP requests.
-- Use the quick sample buttons provided in the UI (CS50, 3Blue1Brown, MIT OCW) or upload a video directly.
+- YouTube may rate-limit repeated automated requests. Wait before retrying, or upload a local video file directly.
 
 ---
 
