@@ -212,15 +212,6 @@ def get_yt_dlp_options(
         'quiet': True,
         'no_warnings': True,
         'source_address': '0.0.0.0',  # Force IPv4 to bypass banned IPv6 cloud ranges
-        'http_headers': {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
-            ),
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Sec-Fetch-Mode': 'navigate',
-        },
         'extractor_args': {
             'youtube': {
                 'player_client': [client],
@@ -228,6 +219,18 @@ def get_yt_dlp_options(
             }
         },
     }
+
+    # Only apply browser headers for web clients; let mobile clients use native signatures
+    if client in ("mweb", "web"):
+        opts['http_headers'] = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+            ),
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Mode': 'navigate',
+        }
 
     if is_audio:
         opts['format'] = 'ba[ext=m4a]/140/ba/best'
@@ -580,26 +583,33 @@ def get_transcript(
 
     try:
         audio_download_success = False
-        for client in ["android", "ios", "mweb"]:
-            try:
-                ydl_audio_opts = get_yt_dlp_options(audio_path, is_audio=True, client=client)
-                with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
-                    ydl.download([video_url])
-                audio_download_success = True
-                break
-            except Exception:
-                if os.path.exists(audio_path):
-                    try:
-                        os.remove(audio_path)
-                    except Exception:
-                        pass
-                continue
 
-        if not os.path.exists(audio_path):
-            downloaded = list(Path(audio_dir).glob("lecture_audio*"))
-            if downloaded:
-                audio_path = str(downloaded[0])
-                audio_download_success = True
+        # Optimization: Reuse already downloaded source video if available from extract_slides()
+        existing_video = os.path.join(output_dir, "source_lecture.mp4")
+        if os.path.exists(existing_video) and os.path.getsize(existing_video) > 1024:
+            audio_path = existing_video
+            audio_download_success = True
+        else:
+            for client in ["android", "ios", "mweb"]:
+                try:
+                    ydl_audio_opts = get_yt_dlp_options(audio_path, is_audio=True, client=client)
+                    with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
+                        ydl.download([video_url])
+                    audio_download_success = True
+                    break
+                except Exception:
+                    if os.path.exists(audio_path):
+                        try:
+                            os.remove(audio_path)
+                        except Exception:
+                            pass
+                    continue
+
+            if not os.path.exists(audio_path):
+                downloaded = list(Path(audio_dir).glob("lecture_audio*"))
+                if downloaded:
+                    audio_path = str(downloaded[0])
+                    audio_download_success = True
 
         if not audio_download_success or not os.path.exists(audio_path):
             return [], "Captions Unavailable (YouTube cloud stream restricted)"
