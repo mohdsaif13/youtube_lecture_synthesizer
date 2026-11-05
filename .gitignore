@@ -28,7 +28,12 @@ wheels/
 
 # Secrets and environment configs
 .env
-.env.local
+.env.*
+!.env.example
+.streamlit/secrets.toml
+cookies.txt
+*cookie*.txt
+yt_cookies.txt
 
 # Temporary processing files and runtime data
 data/
@@ -41,6 +46,5 @@ lecture_synth_*/
 *.pdf
 
 # Streamlit session & OS
-.streamlit/secrets.toml
 .DS_Store
 Thumbs.db
