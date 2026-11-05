@@ -250,6 +250,8 @@ def get_yt_dlp_options(
         try:
             cookie_text = st.secrets.get("YOUTUBE_COOKIES", "")
         except Exception:
+            cookie_text = ""
+        if not cookie_text:
             cookie_text = os.environ.get("YOUTUBE_COOKIES", "")
 
         if cookie_text:
