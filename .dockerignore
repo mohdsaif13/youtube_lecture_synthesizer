@@ -1,4 +1,4 @@
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -9,6 +9,11 @@ venv/
 .git/
 .gitignore
 .env
+.env.*
+.streamlit/secrets.toml
+cookies.txt
+*cookie*.txt
+yt_cookies.txt
 temp_*/
 lecture_synth_*/
 *.log
