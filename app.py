@@ -14,6 +14,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
 
+from youtube_errors import classify_youtube_download_error
+
 import streamlit as st
 import cv2
 import numpy as np
@@ -266,42 +268,6 @@ def get_yt_dlp_options(
     return opts
 
 
-def classify_youtube_download_error(error: Any) -> str:
-    """Convert common yt-dlp failures into clear, actionable Streamlit guidance."""
-    message = str(error or "Unknown yt-dlp error")
-    lowered = message.lower()
-
-    if "sign in to confirm" in lowered or "confirm you're not a bot" in lowered:
-        return (
-            "YouTube requested account verification: sign in to confirm you're not a bot. "
-            "This is a YouTube access challenge, not an invalid lecture URL; changing yt-dlp "
-            "player clients cannot reliably remove it. For a video you are authorized to view, "
-            "export a fresh YouTube cookies.txt file in Netscape format and add its complete "
-            "contents to Streamlit Cloud → App settings → Secrets as YOUTUBE_COOKIES. Keep "
-            "cookies private, never commit them, and remove/refresh them if they expire. "
-            "Alternatively, download the lecture on your own device while signed in and use "
-            "the Upload Lecture Video File tab. YouTube may still restrict downloads from "
-            "cloud-hosted IP addresses even when cookies are supplied."
-        )
-
-    if "403" in lowered or "forbidden" in lowered:
-        return (
-            "YouTube refused this download from the hosting server (HTTP 403). This is an "
-            "upstream access restriction. Try again later, supply a valid cookies.txt through "
-            "Streamlit Secrets for an account authorized to view the video, or download the "
-            "video locally and upload it through the app."
-        )
-
-    if "private video" in lowered or "members-only" in lowered or "age-restricted" in lowered:
-        return (
-            "This video requires account access or permission. Confirm that your account is "
-            "authorized to view it, then provide a fresh cookies.txt through Streamlit Secrets "
-            "or upload a local copy you are permitted to process."
-        )
-
-    return f"Unable to download the YouTube video: {message}"
-
-
 # ---------------------------------------------------------------------------
 # Core Modular Function 1: Slide Detection & Extraction (extract_slides)
 # ---------------------------------------------------------------------------
@@ -339,11 +305,25 @@ def extract_slides(
         if not HAS_YTDLP:
             raise RuntimeError("yt-dlp is required to download YouTube videos. Run: pip install yt-dlp")
 
-        # Multi-client fallback for cloud datacenter IPs (bypasses 403 Forbidden)
+        # Try compatible player clients, preferring web clients when account cookies exist.
+        # Cookies are optional and are never committed to the repository.
         video_filename = os.path.join(output_dir, "source_lecture.mp4")
-        client_candidates = ["android", "ios", "mweb", "tv_embedded"]
+        has_cookie_auth = (
+            os.path.isfile("cookies.txt")
+            or bool(os.environ.get("YOUTUBE_COOKIES_FILE"))
+            or bool(os.environ.get("YOUTUBE_COOKIES"))
+        )
+        try:
+            has_cookie_auth = has_cookie_auth or bool(st.secrets.get("YOUTUBE_COOKIES", ""))
+        except Exception:
+            pass
+        client_candidates = (
+            ["web", "mweb", "android", "ios", "tv_embedded"]
+            if has_cookie_auth else ["android", "ios", "mweb", "tv_embedded"]
+        )
         download_success = False
         last_exception = None
+        download_errors = []
 
         for idx, client in enumerate(client_candidates):
             try:
@@ -363,15 +343,24 @@ def extract_slides(
                 break
             except Exception as e:
                 last_exception = e
+                error_text = str(e)
+                download_errors.append(error_text)
                 if os.path.exists(video_filename):
                     try:
                         os.remove(video_filename)
                     except Exception:
                         pass
+
+                # A bot-verification challenge is not fixed by rotating player clients.
+                # Stop early and show the user the supported authentication/upload options.
+                lowered_error = error_text.lower()
+                if "sign in to confirm" in lowered_error or "confirm you're not a bot" in lowered_error:
+                    break
                 continue
 
         if not download_success:
-            raise RuntimeError(classify_youtube_download_error(last_exception))
+            combined_errors = "\\n".join(download_errors) if download_errors else last_exception
+            raise RuntimeError(classify_youtube_download_error(combined_errors))
 
         local_video_path = video_filename
     else:
