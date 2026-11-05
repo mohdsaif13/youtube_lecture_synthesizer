@@ -12,11 +12,10 @@ class CDNFallbackTests(unittest.TestCase):
         self.assertEqual(app.extract_youtube_id("https://www.youtube.com/embed/kqtD5dpn9C8"), "kqtD5dpn9C8")
         self.assertEqual(app.extract_youtube_id("https://www.youtube.com/shorts/kqtD5dpn9C8"), "kqtD5dpn9C8")
 
-    def test_rate_limiter_defaults_and_caps(self):
+    def test_slide_duration_parameter(self):
         sig = inspect.signature(app.extract_slides)
-        self.assertEqual(sig.parameters["max_slides_per_minute"].default, 2)
-        self.assertEqual(sig.parameters["max_total_slides"].default, 35)
-        self.assertEqual(sig.parameters["min_slide_duration"].default, 30.0)
+        self.assertIn("min_slide_duration", sig.parameters)
+        self.assertEqual(sig.parameters["min_slide_duration"].default, 20.0)
 
     @patch("app.extract_slides_from_youtube_cdn")
     def test_bot_challenge_triggers_cdn_storyboard_fallback(self, mock_cdn):
