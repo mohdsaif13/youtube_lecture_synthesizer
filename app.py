@@ -197,6 +197,63 @@ def format_timestamp(seconds: float) -> str:
     return f"{minutes:02d}:{remaining_secs:02d}"
 
 
+def get_yt_dlp_options(
+    output_path: str,
+    is_audio: bool = False,
+    client: str = "android"
+) -> Dict[str, Any]:
+    """
+    Builds resilient yt-dlp configuration that bypasses YouTube 403 Forbidden errors
+    on datacenter/cloud IPs (Streamlit Community Cloud, AWS, GCP, etc.).
+    """
+    opts: Dict[str, Any] = {
+        'outtmpl': output_path,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'source_address': '0.0.0.0',  # Force IPv4 to bypass banned IPv6 cloud ranges
+        'http_headers': {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+            ),
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Mode': 'navigate',
+        },
+        'extractor_args': {
+            'youtube': {
+                'player_client': [client],
+                'player_skip': ['webpage', 'configs'],
+            }
+        },
+    }
+
+    if is_audio:
+        opts['format'] = 'ba[ext=m4a]/140/ba/best'
+    else:
+        # Prioritize pre-muxed MP4 formats (22: 720p, 18: 360p) which bypass YouTube SABR 403
+        opts['format'] = '22/18/best[height<=720][ext=mp4]/best'
+
+    # Check for cookies (from cookies.txt file or Streamlit Cloud Secrets)
+    cookie_file = None
+    if os.path.exists("cookies.txt"):
+        cookie_file = "cookies.txt"
+    elif hasattr(st, "secrets") and "YOUTUBE_COOKIES" in st.secrets:
+        temp_cookie_path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+        try:
+            with open(temp_cookie_path, "w", encoding="utf-8") as f:
+                f.write(str(st.secrets["YOUTUBE_COOKIES"]))
+            cookie_file = temp_cookie_path
+        except Exception:
+            pass
+
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
+
+    return opts
+
+
 # ---------------------------------------------------------------------------
 # Core Modular Function 1: Slide Detection & Extraction (extract_slides)
 # ---------------------------------------------------------------------------
@@ -234,27 +291,55 @@ def extract_slides(
         if not HAS_YTDLP:
             raise RuntimeError("yt-dlp is required to download YouTube videos. Run: pip install yt-dlp")
 
-        if progress_callback:
-            progress_callback(0.05, "Fetching video metadata and streams...")
-
-        # Configure yt-dlp to download up to 720p mp4 stream
+        # Multi-client fallback for cloud datacenter IPs (bypasses 403 Forbidden)
         video_filename = os.path.join(output_dir, "source_lecture.mp4")
-        ydl_opts = {
-            'format': 'best[height<=720][ext=mp4]/bestvideo[height<=720][ext=mp4]/best[ext=mp4]/best',
-            'outtmpl': video_filename,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-        }
+        client_candidates = ["android", "ios", "mweb", "tv_embedded"]
+        download_success = False
+        last_exception = None
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_path_or_url, download=True)
-            video_meta["title"] = info.get("title", "Lecture Video")
-            video_meta["uploader"] = info.get("uploader", "Academic Instructor")
-            video_meta["duration"] = info.get("duration", 0)
-            video_meta["thumbnail"] = info.get("thumbnail")
+        for idx, client in enumerate(client_candidates):
+            try:
+                if progress_callback:
+                    progress_callback(
+                        0.05 + idx * 0.02,
+                        f"Connecting to video stream (client engine: {client})..."
+                    )
+                ydl_opts = get_yt_dlp_options(video_filename, is_audio=False, client=client)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_path_or_url, download=True)
+                    video_meta["title"] = info.get("title", "Lecture Video")
+                    video_meta["uploader"] = info.get("uploader", "Academic Instructor")
+                    video_meta["duration"] = info.get("duration", 0)
+                    video_meta["thumbnail"] = info.get("thumbnail")
+                download_success = True
+                break
+            except Exception as e:
+                last_exception = e
+                if os.path.exists(video_filename):
+                    try:
+                        os.remove(video_filename)
+                    except Exception:
+                        pass
+                continue
+
+        if not download_success:
+            err_msg = str(last_exception)
+            if "403" in err_msg or "Forbidden" in err_msg:
+                raise RuntimeError(
+                    "YouTube blocked this cloud server IP (HTTP Error 403: Forbidden). "
+                    "YouTube restricts video stream downloads from cloud hosting providers like Streamlit Cloud / AWS.\n\n"
+                    "💡 Quick Solutions:\n"
+                    "1. Use the '📁 Upload Video File' tab to upload the lecture video directly (100% bypasses YouTube blocks).\n"
+                    "2. Or add YouTube Cookies to Streamlit Secrets (YOUTUBE_COOKIES = '...').\n"
+                    "3. Or run the app locally using deploy_local.bat where your residential IP is not blocked."
+                )
+            raise RuntimeError(f"Unable to download YouTube video: {err_msg}")
 
         local_video_path = video_filename
+    else:
+        video_meta["title"] = Path(video_path_or_url).stem.replace("_", " ").title()
+        video_meta["uploader"] = "Uploaded Presentation"
+        video_meta["source_url"] = "Local Upload"
 
     # Open video with OpenCV
     cap = cv2.VideoCapture(local_video_path)
@@ -442,9 +527,49 @@ def get_transcript(
             # Captions disabled or unavailable, move to fallback
             pass
 
-    # Method 2: Local Whisper Audio Fallback
+    # If video is already a local video file (e.g. uploaded video or local file), transcribe directly
+    if os.path.exists(video_url):
+        if progress_callback:
+            progress_callback(0.45, "Transcribing local audio with Whisper model...")
+        if HAS_FASTER_WHISPER:
+            try:
+                model = WhisperModel("base", device="cpu", compute_type="int8")
+                whisper_segments, _ = model.transcribe(video_url, beam_size=3)
+                for s in whisper_segments:
+                    txt = s.text.strip()
+                    if txt:
+                        segments.append({
+                            "text": txt,
+                            "start": float(s.start),
+                            "duration": float(s.end - s.start),
+                            "end": float(s.end)
+                        })
+                return segments, "Local Faster-Whisper (Direct Audio)"
+            except Exception:
+                pass
+        if HAS_OPENAI_WHISPER:
+            try:
+                model = whisper.load_model("base")
+                result = model.transcribe(video_url)
+                for s in result.get("segments", []):
+                    txt = s.get("text", "").strip()
+                    if txt:
+                        start_t = float(s.get("start", 0.0))
+                        end_t = float(s.get("end", 0.0))
+                        segments.append({
+                            "text": txt,
+                            "start": start_t,
+                            "duration": end_t - start_t,
+                            "end": end_t
+                        })
+                return segments, "Local OpenAI Whisper (Direct Audio)"
+            except Exception:
+                pass
+        return [], "Spoken Audio Unavailable (Whisper model required for local video)"
+
+    # Method 2: Local Whisper Audio Fallback with multi-client retry
     if progress_callback:
-        progress_callback(0.45, "Captions not found. Downloading audio for Whisper transcription fallback...")
+        progress_callback(0.45, "Captions not found. Downloading audio stream for Whisper fallback...")
 
     if not HAS_YTDLP:
         return [], "No Transcript Available (yt-dlp missing)"
@@ -454,21 +579,30 @@ def get_transcript(
     audio_path = os.path.join(audio_dir, "lecture_audio.m4a")
 
     try:
-        ydl_audio_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'outtmpl': audio_path,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
-            ydl.download([video_url])
+        audio_download_success = False
+        for client in ["android", "ios", "mweb"]:
+            try:
+                ydl_audio_opts = get_yt_dlp_options(audio_path, is_audio=True, client=client)
+                with yt_dlp.YoutubeDL(ydl_audio_opts) as ydl:
+                    ydl.download([video_url])
+                audio_download_success = True
+                break
+            except Exception:
+                if os.path.exists(audio_path):
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
+                continue
 
         if not os.path.exists(audio_path):
-            # Check for alternate extension downloaded by yt-dlp
             downloaded = list(Path(audio_dir).glob("lecture_audio*"))
             if downloaded:
                 audio_path = str(downloaded[0])
+                audio_download_success = True
+
+        if not audio_download_success or not os.path.exists(audio_path):
+            return [], "Captions Unavailable (YouTube cloud stream restricted)"
 
         if progress_callback:
             progress_callback(0.50, "Transcribing spoken audio with local Whisper model...")
@@ -1280,53 +1414,85 @@ def main():
     # -----------------------------------------------------------------------
     # Main Panel: Input & Trigger
     # -----------------------------------------------------------------------
-    col_input, col_btn = st.columns([4, 1])
-    with col_input:
-        default_url = "https://www.youtube.com/watch?v=kCCWuMmPZ5c"
-        video_url = st.text_input(
-            "Enter Public YouTube Lecture URL:",
-            value="",
-            placeholder="https://www.youtube.com/watch?v=..."
+    input_tab1, input_tab2 = st.tabs(["🔗 YouTube Lecture URL", "📁 Upload Lecture Video File"])
+
+    source_to_process = None
+    is_uploaded = False
+    should_run = False
+
+    with input_tab1:
+        col_input, col_btn = st.columns([4, 1])
+        with col_input:
+            video_url = st.text_input(
+                "Enter Public YouTube Lecture URL:",
+                value="",
+                placeholder="https://www.youtube.com/watch?v=..."
+            )
+        with col_btn:
+            st.write("")
+            st.write("")
+            process_yt_clicked = st.button("🚀 Process YouTube", type="primary", use_container_width=True, key="btn_yt")
+
+        # Quick Samples
+        st.caption("Try sample lecture links:")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("📌 CS50 Lecture Sample"):
+            st.session_state["sample_url"] = "https://www.youtube.com/watch?v=e9Eds2HPxLE"
+        if c2.button("📌 Neural Networks 3B1B"):
+            st.session_state["sample_url"] = "https://www.youtube.com/watch?v=aircAruvnKk"
+        if c3.button("📌 MIT AI Lecture"):
+            st.session_state["sample_url"] = "https://www.youtube.com/watch?v=T3Fc7GS3ne4"
+
+        if "sample_url" in st.session_state and not video_url:
+            video_url = st.session_state["sample_url"]
+
+    with input_tab2:
+        st.markdown(
+            "**Bypass Cloud YouTube Rate Limits:** If YouTube restricts downloads from cloud hosting providers "
+            "(HTTP 403 Forbidden), you can directly upload your `.mp4`, `.mov`, `.webm`, or `.mkv` lecture video here."
         )
-
-    with col_btn:
-        st.write("")
-        st.write("")
-        process_clicked = st.button("🚀 Generate Notes", type="primary", use_container_width=True)
-
-    # Quick Samples
-    st.caption("Try sample lecture links:")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("📌 CS50 Lecture Sample"):
-        st.session_state["sample_url"] = "https://www.youtube.com/watch?v=e9Eds2HPxLE"
-    if c2.button("📌 Neural Networks 3B1B"):
-        st.session_state["sample_url"] = "https://www.youtube.com/watch?v=aircAruvnKk"
-    if c3.button("📌 MIT AI Lecture"):
-        st.session_state["sample_url"] = "https://www.youtube.com/watch?v=T3Fc7GS3ne4"
-
-    if "sample_url" in st.session_state and not video_url:
-        video_url = st.session_state["sample_url"]
+        col_up, col_up_btn = st.columns([4, 1])
+        with col_up:
+            uploaded_file = st.file_uploader("Choose video file", type=["mp4", "mov", "mkv", "webm"], key="video_uploader")
+        with col_up_btn:
+            st.write("")
+            st.write("")
+            process_upload_clicked = st.button("🚀 Process Upload", type="primary", use_container_width=True, key="btn_upload")
 
     # Session State Initialization for Results
     if "results" not in st.session_state:
         st.session_state["results"] = None
 
+    # Determine triggering action
+    if process_yt_clicked:
+        if not video_url or not video_url.strip():
+            st.error("Please enter a valid YouTube video URL.")
+        elif not extract_youtube_id(video_url.strip()):
+            st.error("Invalid YouTube URL. Please provide a standard YouTube video link.")
+        else:
+            should_run = True
+            source_to_process = video_url.strip()
+
+    elif process_upload_clicked:
+        if not uploaded_file:
+            st.error("Please select a video file to upload.")
+        else:
+            should_run = True
+            is_uploaded = True
+
     # -----------------------------------------------------------------------
     # Execution Pipeline
     # -----------------------------------------------------------------------
-    if process_clicked:
-        if not video_url or not video_url.strip():
-            st.error("Please enter a valid YouTube video URL.")
-            return
-
-        vid_id = extract_youtube_id(video_url)
-        if not vid_id:
-            st.error("Invalid YouTube URL. Please provide a standard YouTube video link.")
-            return
-
+    if should_run:
         # Prepare workspace directory
         temp_dir = tempfile.mkdtemp(prefix="lecture_synth_")
         pdf_output_path = os.path.join(temp_dir, "lecture_notes.pdf")
+
+        if is_uploaded:
+            local_upload_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(local_upload_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            source_to_process = local_upload_path
 
         progress_bar = st.progress(0.0)
         status_text = st.empty()
@@ -1337,9 +1503,9 @@ def main():
 
         try:
             # 1. Slide Extraction
-            update_progress(0.05, "Downloading video and extracting unique slides with Computer Vision...")
+            update_progress(0.05, "Extracting unique slides with Computer Vision...")
             slides_data, video_meta = extract_slides(
-                video_path_or_url=video_url,
+                video_path_or_url=source_to_process,
                 output_dir=temp_dir,
                 sample_interval=sample_interval,
                 ssim_threshold=ssim_threshold,
@@ -1348,13 +1514,13 @@ def main():
             )
 
             if not slides_data:
-                st.warning("No slides could be detected. Please check the video URL or adjust sensitivity.")
+                st.warning("No slides could be detected. Please check the video or adjust sensitivity.")
                 return
 
             # 2. Audio & Transcript Extraction
             update_progress(0.40, "Retrieving spoken transcript...")
             transcript_segments, transcript_method = get_transcript(
-                video_url=video_url,
+                video_url=source_to_process,
                 output_dir=temp_dir,
                 progress_callback=update_progress
             )

@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
     curl \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install Python dependencies

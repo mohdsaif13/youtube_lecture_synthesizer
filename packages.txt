@@ -2,3 +2,4 @@ tesseract-ocr
 tesseract-ocr-eng
 ffmpeg
 libgl1
+nodejs

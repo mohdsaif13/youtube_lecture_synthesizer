@@ -1,6 +1,6 @@
 streamlit>=1.35.0
-yt-dlp>=2024.8.6
-opencv-python>=4.9.0.80
+yt-dlp
+opencv-python-headless>=4.9.0.80
 scikit-image>=0.22.0
 pytesseract>=0.3.10
 youtube-transcript-api>=0.6.2
