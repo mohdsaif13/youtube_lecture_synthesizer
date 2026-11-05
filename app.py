@@ -297,9 +297,11 @@ def get_yt_dlp_options(
 def extract_slides_from_youtube_cdn(
     video_path_or_url: str,
     output_dir: str,
-    sample_interval: float = 2.5,
-    ssim_threshold: float = 0.82,
-    min_slide_duration: float = 3.0,
+    sample_interval: float = 3.0,
+    ssim_threshold: float = 0.78,
+    min_slide_duration: float = 30.0,
+    max_slides_per_minute: int = 2,
+    max_total_slides: int = 35,
     progress_callback=None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
@@ -417,6 +419,7 @@ def extract_slides_from_youtube_cdn(
                 prev_gray_small = None
                 last_slide_time = -min_slide_duration
                 slide_counter = 0
+                slides_per_minute: Dict[int, int] = {}
 
                 sheet_step = max(1, int(sample_interval / max(0.5, (interval_sec * frames_per_sheet))))
 
@@ -445,6 +448,14 @@ def extract_slides_from_youtube_cdn(
                             break
 
                         current_time = frame_num * interval_sec
+                        minute_idx = int(current_time // 60)
+
+                        if len(slides) >= max_total_slides:
+                            break
+
+                        if slides_per_minute.get(minute_idx, 0) >= max_slides_per_minute:
+                            continue
+
                         c = idx % cols
                         r = idx // cols
                         tile = sheet_img.crop((c * w, r * h, (c + 1) * w, (r + 1) * h))
@@ -472,6 +483,7 @@ def extract_slides_from_youtube_cdn(
 
                         if is_new_slide:
                             slide_counter += 1
+                            slides_per_minute[minute_idx] = slides_per_minute.get(minute_idx, 0) + 1
                             last_slide_time = current_time
                             prev_gray_small = gray_small
 
@@ -544,9 +556,11 @@ def extract_slides_from_youtube_cdn(
 def extract_slides(
     video_path_or_url: str,
     output_dir: str,
-    sample_interval: float = 2.5,
-    ssim_threshold: float = 0.82,
-    min_slide_duration: float = 3.0,
+    sample_interval: float = 3.0,
+    ssim_threshold: float = 0.78,
+    min_slide_duration: float = 30.0,
+    max_slides_per_minute: int = 2,
+    max_total_slides: int = 35,
     progress_callback=None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
@@ -638,6 +652,8 @@ def extract_slides(
                     sample_interval=sample_interval,
                     ssim_threshold=ssim_threshold,
                     min_slide_duration=min_slide_duration,
+                    max_slides_per_minute=max_slides_per_minute,
+                    max_total_slides=max_total_slides,
                     progress_callback=progress_callback
                 )
                 if cdn_slides:
@@ -673,6 +689,7 @@ def extract_slides(
     last_slide_time = -min_slide_duration  # allow first slide at t=0
     current_frame_idx = 0
     slide_counter = 0
+    slides_per_minute: Dict[int, int] = {}
 
     if progress_callback:
         progress_callback(0.15, "Analyzing video frames with Computer Vision (SSIM)...")
@@ -688,6 +705,14 @@ def extract_slides(
         # Only process frames at the sampled interval
         if current_frame_idx % step_frames == 0:
             current_time = current_frame_idx / fps
+            minute_idx = int(current_time // 60)
+
+            if len(slides) >= max_total_slides:
+                break
+
+            if slides_per_minute.get(minute_idx, 0) >= max_slides_per_minute:
+                current_frame_idx += 1
+                continue
             gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray_small = cv2.resize(gray_full, COMPARE_SIZE, interpolation=cv2.INTER_AREA)
 
@@ -717,6 +742,7 @@ def extract_slides(
 
             if is_slide_transition:
                 slide_counter += 1
+                slides_per_minute[minute_idx] = slides_per_minute.get(minute_idx, 0) + 1
                 slide_filename = f"slide_{slide_counter:03d}_{int(current_time)}s.jpg"
                 slide_path = os.path.join(slides_dir, slide_filename)
                 cv2.imwrite(slide_path, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
@@ -1717,8 +1743,8 @@ def main():
         sample_interval = st.slider(
             "Frame Check Interval (seconds)",
             min_value=1.0,
-            max_value=6.0,
-            value=2.5,
+            max_value=15.0,
+            value=3.0,
             step=0.5,
             help="How often video frames are sampled for slide transitions."
         )
@@ -1726,19 +1752,37 @@ def main():
         ssim_threshold = st.slider(
             "Transition Sensitivity (SSIM Threshold)",
             min_value=0.50,
-            max_value=0.95,
-            value=0.82,
+            max_value=0.90,
+            value=0.78,
             step=0.02,
-            help="Lower values trigger fewer slide changes. 0.80 - 0.85 is ideal for presentation slides."
+            help="0.75 - 0.82 recommended. Lower values prevent capturing speaker movements, webcams, or cursor motions."
         )
 
         min_slide_duration = st.slider(
             "Minimum Slide Duration (seconds)",
-            min_value=1.0,
-            max_value=10.0,
-            value=3.0,
-            step=0.5,
-            help="Debounce interval to eliminate rapid animations and speaker movements."
+            min_value=10.0,
+            max_value=120.0,
+            value=30.0,
+            step=5.0,
+            help="Minimum time between slide captures. Default 30s limits capture to at most 2 slides per minute. Setting to 60s (1 min) limits to at most 1 slide per minute."
+        )
+
+        max_slides_per_minute = st.slider(
+            "Max Slides Per Minute",
+            min_value=1,
+            max_value=4,
+            value=2,
+            step=1,
+            help="Rate limiter: captures at most N slides per minute of video (default: 2 slides/min)."
+        )
+
+        max_total_slides = st.slider(
+            "Max Total Slides Cap",
+            min_value=10,
+            max_value=80,
+            value=35,
+            step=5,
+            help="Maximum total slides extracted for the entire lecture. Keeps processing fast and lecture notes concise for long videos."
         )
 
         st.divider()
@@ -1852,6 +1896,8 @@ def main():
                 sample_interval=sample_interval,
                 ssim_threshold=ssim_threshold,
                 min_slide_duration=min_slide_duration,
+                max_slides_per_minute=max_slides_per_minute,
+                max_total_slides=max_total_slides,
                 progress_callback=update_progress
             )
 

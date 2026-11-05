@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
+import inspect
 
 import app
 
@@ -10,6 +11,12 @@ class CDNFallbackTests(unittest.TestCase):
         self.assertEqual(app.extract_youtube_id("https://youtu.be/kqtD5dpn9C8"), "kqtD5dpn9C8")
         self.assertEqual(app.extract_youtube_id("https://www.youtube.com/embed/kqtD5dpn9C8"), "kqtD5dpn9C8")
         self.assertEqual(app.extract_youtube_id("https://www.youtube.com/shorts/kqtD5dpn9C8"), "kqtD5dpn9C8")
+
+    def test_rate_limiter_defaults_and_caps(self):
+        sig = inspect.signature(app.extract_slides)
+        self.assertEqual(sig.parameters["max_slides_per_minute"].default, 2)
+        self.assertEqual(sig.parameters["max_total_slides"].default, 35)
+        self.assertEqual(sig.parameters["min_slide_duration"].default, 30.0)
 
     @patch("app.extract_slides_from_youtube_cdn")
     def test_bot_challenge_triggers_cdn_storyboard_fallback(self, mock_cdn):
