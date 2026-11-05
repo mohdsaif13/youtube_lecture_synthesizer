@@ -253,7 +253,7 @@ def get_yt_dlp_options(
         if cookie_text:
             temp_cookie_path = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
             with open(temp_cookie_path, "w", encoding="utf-8") as cookie_handle:
-                cookie_handle.write(str(cookie_text).replace("\\r\\n", "\\n"))
+                cookie_handle.write(str(cookie_text).replace("\r\n", "\n"))
             try:
                 os.chmod(temp_cookie_path, 0o600)
             except OSError:
@@ -273,7 +273,7 @@ def classify_youtube_download_error(error: Any) -> str:
 
     if "sign in to confirm" in lowered or "confirm you're not a bot" in lowered:
         return (
-            "YouTube requested account verification ("Sign in to confirm you're not a bot"). "
+            "YouTube requested account verification: sign in to confirm you're not a bot. "
             "This is a YouTube access challenge, not an invalid lecture URL; changing yt-dlp "
             "player clients cannot reliably remove it. For a video you are authorized to view, "
             "export a fresh YouTube cookies.txt file in Netscape format and add its complete "
